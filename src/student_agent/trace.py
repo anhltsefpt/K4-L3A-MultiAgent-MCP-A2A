@@ -16,6 +16,20 @@ class TraceWriter:
         self.path = path
         self.contracts = contracts
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._pending: list[str] | None = None
+
+    def begin(self) -> None:
+        """Buffer events so a case interrupted by an MCP session failure can be retried."""
+        self._pending = []
+
+    def commit(self) -> None:
+        lines, self._pending = self._pending or [], None
+        if lines:
+            with self.path.open("a", encoding="utf-8") as handle:
+                handle.writelines(lines)
+
+    def rollback(self) -> None:
+        self._pending = None
 
     def emit(
         self,
@@ -46,6 +60,10 @@ class TraceWriter:
         }
         event.update({key: value for key, value in optional.items() if value is not None})
         self.contracts.validate_trace(event, "trace event")
-        with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+        line = json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
+        if self._pending is not None:
+            self._pending.append(line)
+        else:
+            with self.path.open("a", encoding="utf-8") as handle:
+                handle.write(line)
         return event

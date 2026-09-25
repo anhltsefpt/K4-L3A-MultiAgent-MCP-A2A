@@ -1,15 +1,41 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
+import anyio
 import httpx2
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
+from mcp.shared.exceptions import MCPError
 
 from .contracts import Contracts
+
+_TRANSIENT_LEAVES = (
+    httpx2.TransportError,
+    MCPError,  # e.g. 'Connection closed' when the server drops the stream
+    OSError,
+    TimeoutError,
+    asyncio.CancelledError,
+    anyio.ClosedResourceError,
+    anyio.BrokenResourceError,
+    anyio.EndOfStream,
+)
+
+
+def leaf_exceptions(exc: BaseException) -> list[BaseException]:
+    """Flatten (nested) exception groups; anyio wraps every error leaving a task group."""
+    if isinstance(exc, BaseExceptionGroup):
+        return [leaf for inner in exc.exceptions for leaf in leaf_exceptions(inner)]
+    return [exc]
+
+
+def is_transient(exc: BaseException) -> bool:
+    """True when every underlying error is a transport/session failure worth a fresh session."""
+    return all(isinstance(leaf, _TRANSIENT_LEAVES) for leaf in leaf_exceptions(exc))
 
 
 class EvidenceGateway:
@@ -24,14 +50,14 @@ class EvidenceGateway:
     async def call(self, tool_name: str, *, case_id: str, **arguments: str) -> dict[str, Any]:
         payload = {"case_id": case_id, **arguments}
         result = await self._session.call_tool(tool_name, arguments=payload)
-        if result.isError:
+        if getattr(result, "is_error", None) or getattr(result, "isError", False):
             message = " ".join(
                 block.text for block in result.content if getattr(block, "text", None)
             )
             raise RuntimeError(f"MCP tool {tool_name} failed: {message or 'unknown error'}")
-        evidence = getattr(result, "structuredContent", None)
+        evidence = getattr(result, "structured_content", None)
         if evidence is None:
-            evidence = getattr(result, "structured_content", None)
+            evidence = getattr(result, "structuredContent", None)
         if evidence is None:
             text_blocks = [block.text for block in result.content if getattr(block, "text", None)]
             if len(text_blocks) != 1:
