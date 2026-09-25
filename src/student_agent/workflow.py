@@ -17,6 +17,9 @@ gateway and hands the correlated state forward. Nothing downstream may invent an
 from __future__ import annotations
 
 import asyncio
+
+import httpx2
+
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
@@ -122,7 +125,7 @@ class Specialist:
                 # The gateway rejected the call itself: deterministic, so do not retry.
                 last_error = exc
                 break
-            except (TimeoutError, OSError, ValueError) as exc:
+            except (TimeoutError, OSError, ValueError, httpx2.TransportError) as exc:
                 last_error = exc
                 if attempt == MAX_ATTEMPTS:
                     break
